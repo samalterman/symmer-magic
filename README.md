@@ -19,5 +19,5 @@ For Symmer use, cite
 
 > William M. Kirby, Andrew Tranter, and Peter J. Love, *Contextual Subspace Variational Quantum Eigensolver*, [Quantum 5, 456](https://doi.org/10.22331/q-2021-05-14-456) (2021).
 
-For the `Metropolis` method for calculating SRE, cite
+For the Metropolis method for calculating SRE, cite
 > Xhek Turkeshi, Anatoly Dymarsky, and Piotr Sierant, *Pauli spectrum and nonstabilizerness of typical quantum many-body states*, [Phys Rev. B 111, 054301](https://doi.org/10.1103/PhysRevB.111.054301) (2025).
