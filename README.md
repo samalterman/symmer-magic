@@ -5,9 +5,9 @@ Required main package: [Symmer](https://github.com/qmatter-labs/symmer/tree/main
 1. Calculate stabilizer Renyi entropy for a QuantumState using both exact and numerical sampling methods
 
 ## Installation
-1. Download the package locally (either by running `pip install git+https:///github.com/samalterman/symmer-magic` or just downloading from this page)
-2. Activate whatever Python environment you want to use (either Conda or venv)
-3. Navigate to the `symmer-magic` directory and run `pip install .`
+From the Python environment you want to use for simulations (either Conda or venv) run `pip install git+https://github.com/samalterman/symmer-magic/`
+
+Alternatively, download the package locally, navigate to the symmer-magic root directory and run `pip install .`
 
 ## Citation
 For Symmer use, cite
@@ -21,6 +21,8 @@ For Symmer use, cite
 
 For the use of the [PauliComposer](https://github.com/sebastianvromero/PauliComposer) algorithm for calculating sparse matrix representations of Pauli strings, cite
 >Sebastián Vidal Romero and Juan Santoz-Suárez, *PauliComposer: compute tensor products of Pauli matrices efficiently*, [Quantum Information Processing 22, 449](https://doi.org/10.1007/s11128-023-04204-w) (2023).
+For stabilizer Rényi entropy (SRE), cite
+> Lorenzo Leone, Salvatore F. E. Oliviero, and Alioscia Hamma, *Stabilizer Rényi Entropy*, [Phys. Rev. Lett. 128, 050402](https://doi.org/10.1103/PhysRevLett.128.050402) (2022).
 
 For the Metropolis method for calculating SRE, cite
 > Xhek Turkeshi, Anatoly Dymarsky, and Piotr Sierant, *Pauli spectrum and nonstabilizerness of typical quantum many-body states*, [Phys Rev. B 111, 054301](https://doi.org/10.1103/PhysRevB.111.054301) (2025).
