@@ -5,9 +5,8 @@ Required main package: [Symmer](https://github.com/qmatter-labs/symmer/tree/main
 1. Calculate stabilizer Renyi entropy for a QuantumState using both exact and numerical sampling methods
 
 ## Installation
-1. Download the package locally (either by running `pip install git+https:///github.com/samalterman/symmer-magic` or just downloading from this page)
-2. Activate whatever Python environment you want to use (either Conda or venv)
-3. Navigate to the `symmer-magic` directory and run `pip install .`
+From the Python environment you want to use for simulations (either Conda or venv) run `pip install git+https://github.com/samalterman/symmer-magic/`
+Alternatively, download the package locally, navigate to the symmer-magic root directory and run `pip install .`
 
 ## Citation
 For Symmer use, cite
