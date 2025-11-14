@@ -6,6 +6,7 @@ Required main package: [Symmer](https://github.com/qmatter-labs/symmer/tree/main
 
 ## Installation
 From the Python environment you want to use for simulations (either Conda or venv) run `pip install git+https://github.com/samalterman/symmer-magic/`
+
 Alternatively, download the package locally, navigate to the symmer-magic root directory and run `pip install .`
 
 ## Citation
