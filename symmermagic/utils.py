@@ -27,24 +27,16 @@ def stab_renyi_entropy(state: QuantumState, order: int=2, filtered : bool = Fals
     if n_qubits > 12 and not sampling:
         print("Warning: Direct computation for large states may take an extremely long time!")
 
-    # still experimental so don't really trust this
     if sampling:
         if sampling_approach == 'Metropolis':
             zeta=stab_entropy_metropolis(state_vec,order=order,filtered=filtered,n_samples=n_samples)
         else:
             raise ValueError('Unrecognised approximation strategy.')
     else:
-        symps=product((False,True),repeat=2*n_qubits) #generate all the possible symplectic matrices
-        sparses=map(lambda symp : PauliwordOp(np.array([symp]),coeff_vec=[1]).to_sparse_matrix, symps)
-        # now we go through all of the possible symplectic matrices
-        for sparse_mat in sparses:
-            #sparse_mat=PauliwordOp(np.array([symp]),coeff_vec=[1]).to_sparse_matrix
+        pstrings=list(map(lambda plist : ''.join(plist),product(['I','X','Y','Z'],repeat=n_qubits)))
+        for pstring in pstrings:
+            sparse_mat=PauliComposer(pstring).to_sparse()
             zeta+=(abs((state_vec_H.dot(sparse_mat.dot(state_vec))) [0,0])**(2*order))/d
-
-        #sparse_list=[PauliwordOp(symp_matrix=symp,coeff_vec=[1]).to_sparse_matrix for symp in symp_list]
-        #for sparse_mat in sparse_mats:
-        #    prob=abs((state_vec_H.dot(sparse_mat.dot(state_vec)))[0,0])**2
-        #    zeta +=(prob**order)/d
         if filtered:
             zeta=(zeta-1/d)*d/(d-1)
     Mq=-np.log2(zeta)/(order-1)
@@ -147,3 +139,102 @@ def stab_linear_entropy(state : QuantumState):
         zeta +=exval**(4)
     Mlin=1-zeta/(2**n_qubits)
     return Mlin
+
+
+"""
+PauliComposer class definition from https://github.com/sebastianvromero/PauliComposer/
+
+See: https://arxiv.org/abs/2301.00560
+"""
+
+import warnings
+import numpy as np
+import scipy.sparse as ss
+from numbers import Number
+
+PAULI_LABELS = ['I', 'X', 'Y', 'Z']
+NUM2LABEL = {ind: PAULI_LABELS[ind] for ind in range(len(PAULI_LABELS))}
+BINARY = {'I': '0', 'X': '1', 'Y': '1', 'Z': '0'}
+PAULI = {'I': np.eye(2, dtype=np.uint8),
+         'X': np.array([[0, 1], [1, 0]], dtype=np.uint8),
+         'Y': np.array([[0, -1j], [1j, 0]], dtype=np.complex64),
+         'Z': np.array([[1, 0], [0, -1]], dtype=np.int8)}
+
+
+class PauliComposer:
+
+    def __init__(self, entry: str, weight: Number = None):
+        # Compute the number of dimensions for the given entry
+        n = len(entry)
+        self.n = n
+
+        # Compute some helpful powers
+        self.dim = 1<<n
+
+        # Store the entry converting the Pauli labels into uppercase
+        self.entry = entry.upper()
+        self.paulis = list(set(self.entry))
+
+        # (-i)**(0+4m)=1, (-i)**(1+4m)=-i, (-i)**(2+4m)=-1, (-i)**(3+4m)=i
+        mat_ent = {0: 1, 1: -1j, 2: -1, 3: 1j}
+
+        # Count the number of ny mod 4
+        self.ny = self.entry.count('Y') & 3
+        init_ent = mat_ent[self.ny]
+        if weight is not None:
+            # first non-zero entry
+            init_ent *= weight
+        self.init_entry = init_ent
+        self.iscomplex = np.iscomplex(init_ent)
+
+        # Reverse the input and its 'binary' representation
+        rev_entry = self.entry[::-1]
+        rev_bin_entry = ''.join([BINARY[ent] for ent in rev_entry])
+
+        # Column of the first-row non-zero entry
+        col_val = int(''.join([BINARY[ent] for ent in self.entry]), 2)
+
+        # Initialize an empty (2**n x 3)-matrix (rows, columns, entries)
+        # row = np.arange(self.dim) 
+        col = np.empty(self.dim, dtype=np.int32)
+        # FIXME: storing rows and columns as np.complex64 since NumPy arrays
+        # must have the same data type for each entry. Consider using
+        # pd.DataFrame?
+
+        col[0] = col_val  # first column
+        # The AND bit-operator computes more rapidly mods of 2**n. Check that:
+        #    x mod 2**n == x & (2**n-1)
+        if weight is not None:
+            if self.iscomplex:
+                ent = np.full(self.dim, self.init_entry)
+            else:
+                ent = np.full(self.dim, float(self.init_entry))
+        else:
+            if self.iscomplex:
+                ent = np.full(self.dim, self.init_entry, dtype=np.complex64)
+            else:
+                ent = np.full(self.dim, self.init_entry, dtype=np.int8)
+
+        for ind in range(n):
+            p = 1<<int(ind)  # left-shift of bits ('1' (1) << 2 = '100' (4))
+            p2 = p<<1
+            disp = p if rev_bin_entry[ind] == '0' else -p  # displacements
+            col[p:p2] = col[0:p] + disp  # compute new columns
+            # col[p:p2] = col[0:p] ^ p  # alternative for computing column
+
+            # Store the new entries using old ones
+            if rev_entry[ind] in ['I', 'X']:
+                ent[p:p2] = ent[0:p]
+            else:
+                ent[p:p2] = -ent[0:p]
+
+        self.col = col
+        self.mat = ent
+
+    def to_sparse(self):
+        self.row = np.arange(self.dim)
+        return ss.csr_matrix((self.mat, (self.row, self.col)),
+                             shape=(self.dim, self.dim))
+
+    def to_matrix(self):
+        return self.to_sparse().toarray()
