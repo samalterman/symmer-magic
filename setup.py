@@ -33,6 +33,7 @@ setup(
         "openfermion>=1.5.0",
         "symmer>=0.0.10",
         "sympy>=1.10",
+        'joblib>=1.3.2'
     ],
     extras_require={
         "dev": [

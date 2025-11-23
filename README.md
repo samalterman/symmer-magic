@@ -22,8 +22,11 @@ For Symmer use, cite
 For stabilizer Rényi entropy (SRE), cite
 > Lorenzo Leone, Salvatore F. E. Oliviero, and Alioscia Hamma, *Stabilizer Rényi Entropy*, [Phys. Rev. Lett. 128, 050402](https://doi.org/10.1103/PhysRevLett.128.050402) (2022).
 
+For the Metropolis sampling method for calculating SRE, cite
+> Xhek Turkeshi, Anatoly Dymarsky, and Piotr Sierant, *Pauli spectrum and nonstabilizerness of typical quantum many-body states*, [Phys. Rev. B 111, 054301](https://doi.org/10.1103/PhysRevB.111.054301) (2025).
+
+For the perfect Paulis sampling method for calculating SRE, cite
+> Guglielmo Lami and Mario Collura, *Nonstabilizerness via Perfect Pauli Sampling of Matrix Product States*, [Phys. Rev. Lett. 131, 180401](https://doi.org/10.1103/PhysRevLett.131.180401) (2023).
+
 For the use of the [PauliComposer](https://github.com/sebastianvromero/PauliComposer) algorithm for calculating sparse matrix representations of Pauli strings, cite
 >Sebastián Vidal Romero and Juan Santoz-Suárez, *PauliComposer: compute tensor products of Pauli matrices efficiently*, [Quantum Information Processing 22, 449](https://doi.org/10.1007/s11128-023-04204-w) (2023).
-
-For the Metropolis method for calculating SRE, cite
-> Xhek Turkeshi, Anatoly Dymarsky, and Piotr Sierant, *Pauli spectrum and nonstabilizerness of typical quantum many-body states*, [Phys Rev. B 111, 054301](https://doi.org/10.1103/PhysRevB.111.054301) (2025).

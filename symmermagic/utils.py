@@ -3,14 +3,17 @@ import numpy as np
 import scipy as sp
 from itertools import chain, product
 import random
+from numbers import Number
+from joblib import Parallel, delayed
 
 def stab_renyi_entropy(state: QuantumState, order: int=2, filtered : bool = False, sampling : bool = False, sampling_approach : str = 'Metropolis', n_samples : int= 1e6):
     """Calculates the stabilizer Renyi entropy of the state. See arXiv:2106.12567 for details.
     
     Args:
+        state (QuantumState): the state to calculate the SRE of.
         order (int, optional): the order of SRE to calculate. Default is 2.
         filtered (bool, optional): whether to calculate the filtered stabilizer Renyi entropy by excluding the identity. See arXiv:2312.11631. Default is False.
-        sampling (bool, optional): (currently experimental) whether to use a sampling approach. Default is False. 
+        sampling (bool, optional): whether to use a sampling approach. Default is False. 
         sampling_approach (str, optional): which sampling approach to use. Valid options are 'Metropolis'. Default is 'Metropolis'.
         n_samples (int, optional): if using a sampling approach, the number of samples to use. Default is 1e6.
         return_xi_vec (bool, optional): whether to also return the vector of probabilities. Defaullt is False.
@@ -18,33 +21,63 @@ def stab_renyi_entropy(state: QuantumState, order: int=2, filtered : bool = Fals
     Returns:
         Mq: the calculated stabilizer Renyi entropy
     """
-    zeta=0
+    Mq=0
     n_qubits=state.n_qubits
-    d=2**n_qubits
     state_vec=state.to_sparse_matrix
-    state_vec_H=state_vec.getH()
 
     if n_qubits > 12 and not sampling:
         print("Warning: Direct computation for large states may take an extremely long time!")
 
     if sampling:
         if sampling_approach == 'Metropolis':
-            zeta=stab_entropy_metropolis(state_vec,order=order,filtered=filtered,n_samples=n_samples)
+            Mq=stab_entropy_metropolis(state_vec,order=order,filtered=filtered,n_samples=n_samples)
         else:
             raise ValueError('Unrecognised approximation strategy.')
     else:
-        pstrings=list(map(lambda plist : ''.join(plist),product(['I','X','Y','Z'],repeat=n_qubits)))
-        for pstring in pstrings:
-            sparse_mat=PauliComposer(pstring).to_sparse()
-            zeta+=(abs((state_vec_H.dot(sparse_mat.dot(state_vec))) [0,0])**(2*order))/d
-        if filtered:
-            zeta=(zeta-1/d)*d/(d-1)
+        Mq=stab_entropy_exact(state_vec=state_vec,order=order,filtered=filtered)
+    return Mq
+
+def stab_entropy_exact(state_vec, order : int = 2, filtered : bool = False) -> float:
+    """Calculates the exact stabilizer Renyi entropy of the given state by sampling all possible Pauli strings.
+    Args: 
+        state_vec (csr_matrix): the sparse matrix representation of the state to calculate the stabilizer entropy for
+        order (int): the order of the stabilizer entropy to calculate. default is 2
+        filtered (bool): whether to calculate the filtered stabilizer entropy instead of the unfilitered stabilizer entropy. See arXiv:2312.11631 for details. default is False.
+    Returns:
+        Mq (float): the calculated stabilizer entropy """
+    
+    n_qubits=float(np.log2(state_vec.shape[0]))
+    assert n_qubits.is_integer(), 'state is wrong shape!'
+    state_vec_H=state_vec.getH()
+    n_qubits=int(n_qubits)
+    d=2**n_qubits
+    zeta=0
+    pstrings=list(map(lambda plist : ''.join(plist),product(['I','X','Y','Z'],repeat=n_qubits)))
+
+    def expval(pstring):
+        sparse_mat=PauliComposer(pstring).to_sparse()
+        val=(abs((state_vec_H.dot(sparse_mat.dot(state_vec))) [0,0])**(2*order))/d
+        return val
+    
+    zeta_vals=Parallel(n_jobs=8,return_as='generator_unordered')(delayed(expval)(pstring) for pstring in pstrings)
+    zeta=accumulator_sum(zeta_vals)
+
+    # zeta_vals=(
+    #     (abs((
+    #         state_vec_H.dot(PauliComposer(pstring).to_sparse().dot(state_vec)))[0,0]
+    #     )**(2*order))/d
+    # for pstring in pstrings)
+    # zeta=sum(zeta_vals)
+    # for pstring in pstrings:
+    #     sparse_mat=PauliComposer(pstring).to_sparse()
+    #     zeta+=(abs((state_vec_H.dot(sparse_mat.dot(state_vec))) [0,0])**(2*order))/d
+    if filtered:
+        zeta=(zeta-1/d)*d/(d-1)
     Mq=-np.log2(zeta)/(order-1)
     return Mq
 
-
 def stab_entropy_metropolis(state_vec, order : int = 2, filtered : bool = False, n_samples : int = 1e6) -> float:
-    """Calculates the stabilizer entropy of the given state using a Metropolis-Hastings algorithm. See arXiv:2312.11631 for details.
+    """Approximates the stabilizer entropy of the given state using a Metropolis-Hastings algorithm. See arXiv:2312.11631 for details.
     Args: 
         state_vec (csr_matrix): the sparse matrix representation of the state to calculate the stabilizer entropy for
         order (int): the order of the stabilizer entropy to calculate. default is 2
@@ -52,7 +85,7 @@ def stab_entropy_metropolis(state_vec, order : int = 2, filtered : bool = False,
         n_samples (int): the number of samples to use. default is 1e6
 
     Returns:
-        zeta (float): the calculated stabilizer entropy 
+        Mq (float): the calculated stabilizer entropy 
     """
     n_qubits=float(np.log2(state_vec.shape[0]))
     assert n_qubits.is_integer(), 'state is wrong shape!'
@@ -118,8 +151,21 @@ def stab_entropy_metropolis(state_vec, order : int = 2, filtered : bool = False,
     zeta = sum([p**(order-1) for p in prob_list])/n_samples
     if not filtered:
         zeta=((d-1)*zeta+1)/d
+    Mq=-np.log2(zeta)/(order-1)
+    return float(Mq)
 
-    return float(zeta)
+def stab_entropy_perfectpaulis(state : QuantumState, order : int = 2, filtered : bool = False, n_samples : int = 1e5) -> float:
+     """Approximates the stabilizer entropy of the given state using "perfect Pauli" sampling of matrix product states. See arXiv:2303.05536 for details.
+    Args: 
+        state QuantumState: the sparse matrix representation of the state to calculate the stabilizer entropy for
+        order (int): the order of the stabilizer entropy to calculate. default is 2
+        filtered (bool): whether to calculate the filtered stabilizer entropy instead of the unfilitered stabilizer entropy. See arXiv:2312.11631 for details. default is False.
+        n_samples (int): the number of samples to use. default is 1e6
+
+    Returns:
+        Mq (float): the calculated stabilizer entropy 
+    """
+     
 
 def stab_linear_entropy(state : QuantumState):
     """Calculates the stabilizer linear entropy of the state. See arXiv:2106.12567 for details.
@@ -140,17 +186,34 @@ def stab_linear_entropy(state : QuantumState):
     Mlin=1-zeta/(2**n_qubits)
     return Mlin
 
+def pauli_spectrum(state : QuantumState) -> float:
+    """Calculates the Pauli spectrum of the given state by sampling all possible Pauli strings"""
+    state_vec=state.to_sparse_matrix
+    n_qubits=float(np.log2(state_vec.shape[0]))
+    assert n_qubits.is_integer(), 'state is wrong shape!'
+    state_vec_H=state_vec.getH()
+    n_qubits=int(n_qubits)
+    d=2**n_qubits
+    probs=[]
+    pstrings=list(map(lambda plist : ''.join(plist),product(['I','X','Y','Z'],repeat=n_qubits)))
+    for pstring in pstrings:
+        sparse_mat=PauliComposer(pstring).to_sparse()
+        probs.append((abs((state_vec_H.dot(sparse_mat.dot(state_vec))) [0,0])**2)/d)
+    return probs
+
+def accumulator_sum(generator):
+    """Helper method for effectively summing generators"""
+    total = 0
+    for value in generator:
+        total += value
+    return total
+
 
 """
 PauliComposer class definition from https://github.com/sebastianvromero/PauliComposer/
 
 See: https://arxiv.org/abs/2301.00560
 """
-
-import warnings
-import numpy as np
-import scipy.sparse as ss
-from numbers import Number
 
 PAULI_LABELS = ['I', 'X', 'Y', 'Z']
 NUM2LABEL = {ind: PAULI_LABELS[ind] for ind in range(len(PAULI_LABELS))}
@@ -233,7 +296,7 @@ class PauliComposer:
 
     def to_sparse(self):
         self.row = np.arange(self.dim)
-        return ss.csr_matrix((self.mat, (self.row, self.col)),
+        return sp.sparse.csr_matrix((self.mat, (self.row, self.col)),
                              shape=(self.dim, self.dim))
 
     def to_matrix(self):
