@@ -4,10 +4,11 @@ import scipy as sp
 from itertools import chain, product
 import random
 from numbers import Number
-from joblib import Parallel, delayed
-import threading
+from joblib import Parallel, delayed, parallel_config
+from dask.distributed import Client, LocalCluster
+from dask_jobqueue import SLURMCluster
 
-def stab_renyi_entropy(state: QuantumState, order: int=2, filtered : bool = False, approach : str = 'exact', parallel : bool = False, n_threads : int = 4, n_samples : int= 1e6):
+def stab_renyi_entropy(state: QuantumState, order: int=2, filtered : bool = False, approach : str = 'exact', parallel : bool = False, n_threads : int = 4, n_samples : int= 1e6, cluster : bool = False):
     """Calculates the stabilizer Renyi entropy of the state. See arXiv:2106.12567 for details.
     
     Args:
@@ -65,8 +66,9 @@ def stab_entropy_exact(state_vec, order : int = 2, filtered : bool = False, para
             val=(abs((state_vec_H.dot(sparse_mat.dot(state_vec))) [0,0])**(2*order))/d
             del sparse_mat
             return val
-        
-        zeta_vals=Parallel(n_jobs=n_threads,return_as='generator_unordered',backend='threading')(delayed(expval)(pstring) for pstring in pstrings)
+        with LocalCluster() as cluster, Client(cluster) as client:
+            with parallel_config(backend='loky'):
+                zeta_vals=Parallel(n_jobs=n_threads,return_as='generator_unordered',backend='threading')(delayed(expval)(pstring) for pstring in pstrings)
         zeta = accumulator_sum(zeta_vals)
 
     else:

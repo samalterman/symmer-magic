@@ -7,7 +7,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="symmer-magic",
-    version="0.1.3",
+    version="0.1.4",
     author="Sam Alterman",
     author_email="samalterman@gmail.com",
     description="SRE calculations for the Symmer quantum chemistry package",
@@ -33,7 +33,9 @@ setup(
         "openfermion>=1.5.0",
         "symmer>=0.0.10",
         "sympy>=1.10",
-        'joblib>=1.3.2'
+        'joblib>=1.3.2',
+        'dask>=2023.1.1',
+        'dask-jobqueue>=0.5.0'
     ],
     extras_require={
         "dev": [
