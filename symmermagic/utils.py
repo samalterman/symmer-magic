@@ -16,7 +16,6 @@ def stab_renyi_entropy(state: QuantumState, order: int=2, filtered : bool = Fals
         sampling (bool, optional): whether to use a sampling approach. Default is False. 
         sampling_approach (str, optional): which sampling approach to use. Valid options are 'Metropolis'. Default is 'Metropolis'.
         n_samples (int, optional): if using a sampling approach, the number of samples to use. Default is 1e6.
-        return_xi_vec (bool, optional): whether to also return the vector of probabilities. Defaullt is False.
 
     Returns:
         Mq: the calculated stabilizer Renyi entropy
@@ -59,8 +58,8 @@ def stab_entropy_exact(state_vec, order : int = 2, filtered : bool = False) -> f
         val=(abs((state_vec_H.dot(sparse_mat.dot(state_vec))) [0,0])**(2*order))/d
         return val
     
-    zeta_vals=Parallel(n_jobs=8,return_as='generator_unordered')(delayed(expval)(pstring) for pstring in pstrings)
-    zeta=accumulator_sum(zeta_vals)
+    zeta=sum(Parallel(n_jobs=-1,return_as='generator_unordered')(delayed(expval)(pstring) for pstring in pstrings))
+    #zeta=sum(zeta_vals)
 
     # zeta_vals=(
     #     (abs((
