@@ -5,6 +5,7 @@ from itertools import chain, product
 import random
 from numbers import Number
 from joblib import Parallel, delayed
+import threading
 
 def stab_renyi_entropy(state: QuantumState, order: int=2, filtered : bool = False, approach : str = 'exact', parallel : bool = False, n_threads : int = 4, n_samples : int= 1e6):
     """Calculates the stabilizer Renyi entropy of the state. See arXiv:2106.12567 for details.
@@ -60,12 +61,13 @@ def stab_entropy_exact(state_vec, order : int = 2, filtered : bool = False, para
 
     if parallel:    
         def expval(pstring):
+            print(f'Thread ID: {threading.get_ident()}')
             sparse_mat=PauliComposer(pstring).to_sparse()
             val=(abs((state_vec_H.dot(sparse_mat.dot(state_vec))) [0,0])**(2*order))/d
             del sparse_mat
             return val
         
-        zeta_vals=Parallel(n_jobs=n_threads,return_as='generator_unordered')(delayed(expval)(pstring) for pstring in pstrings)
+        zeta_vals=Parallel(n_jobs=n_threads,return_as='generator_unordered',backend='threading')(delayed(expval)(pstring) for pstring in pstrings)
         zeta = accumulator_sum(zeta_vals)
 
     else:
