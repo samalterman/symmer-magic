@@ -6,16 +6,17 @@ import random
 from numbers import Number
 from joblib import Parallel, delayed
 
-def stab_renyi_entropy(state: QuantumState, order: int=2, filtered : bool = False, sampling : bool = False, sampling_approach : str = 'Metropolis', n_samples : int= 1e6):
+def stab_renyi_entropy(state: QuantumState, order: int=2, filtered : bool = False, approach : str = 'exact', parallel : bool = False, n_threads : int = 4, n_samples : int= 1e6):
     """Calculates the stabilizer Renyi entropy of the state. See arXiv:2106.12567 for details.
     
     Args:
         state (QuantumState): the state to calculate the SRE of.
         order (int, optional): the order of SRE to calculate. Default is 2.
-        filtered (bool, optional): whether to calculate the filtered stabilizer Renyi entropy by excluding the identity. See arXiv:2312.11631. Default is False.
-        sampling (bool, optional): whether to use a sampling approach. Default is False. 
-        sampling_approach (str, optional): which sampling approach to use. Valid options are 'Metropolis'. Default is 'Metropolis'.
-        n_samples (int, optional): if using a sampling approach, the number of samples to use. Default is 1e6.
+        filtered (bool, optional): whether to calculate the filtered stabilizer Renyi entropy by excluding the identity. See arXiv:2312.11631. Default is False. 
+        approach (str, optional): which calculation approach to use. Valid options are {'exact', 'metropolis','perfectpaulis'}. Default is 'Exact'.
+        n_samples (int, optional): the number of samples to use (only applies to 'metropolis' and 'perfectpaulis'). Default is 1e6.
+        parallel (bool, optional): whether to use parallelization approaches (only applies to 'exact' and 'perfectpaulis'). Default is False.
+        n_threads (int, optional): if using parallelization, the number of threads to use. Default is 4.
 
     Returns:
         Mq: the calculated stabilizer Renyi entropy
@@ -23,25 +24,29 @@ def stab_renyi_entropy(state: QuantumState, order: int=2, filtered : bool = Fals
     Mq=0
     n_qubits=state.n_qubits
     state_vec=state.to_sparse_matrix
-
-    if n_qubits > 12 and not sampling:
+    approach.lower()
+    if n_qubits > 12 and approach == 'exact' and not parallel:
         print("Warning: Direct computation for large states may take an extremely long time!")
 
-    if sampling:
-        if sampling_approach == 'Metropolis':
+    match approach:
+        case 'exact' :
+            Mq=stab_entropy_exact(state_vec=state_vec,order=order,filtered=filtered,parallel=parallel,n_threads=n_threads)
+        case 'metropolis' :
             Mq=stab_entropy_metropolis(state_vec,order=order,filtered=filtered,n_samples=n_samples)
-        else:
-            raise ValueError('Unrecognised approximation strategy.')
-    else:
-        Mq=stab_entropy_exact(state_vec=state_vec,order=order,filtered=filtered)
+        case 'perfectpaulis' :
+            print('perfectpaulis is not yet implemented. Try again, eager beaver!')
+        case _:
+            raise ValueError('Unrecognised calculation strategy.')
     return Mq
 
-def stab_entropy_exact(state_vec, order : int = 2, filtered : bool = False) -> float:
+def stab_entropy_exact(state_vec, order : int = 2, filtered : bool = False, parallel : bool = False, n_threads : int = 4) -> float:
     """Calculates the exact stabilizer Renyi entropy of the given state by sampling all possible Pauli strings.
     Args: 
         state_vec (csr_matrix): the sparse matrix representation of the state to calculate the stabilizer entropy for
         order (int): the order of the stabilizer entropy to calculate. default is 2
         filtered (bool): whether to calculate the filtered stabilizer entropy instead of the unfilitered stabilizer entropy. See arXiv:2312.11631 for details. default is False.
+        parallel (bool, optional): whether to use parallelization approaches. Default is False.
+        n_threads (int, optional): if using parallelization, the number of threads to use. Default is 4.
     Returns:
         Mq (float): the calculated stabilizer entropy """
     
@@ -53,23 +58,18 @@ def stab_entropy_exact(state_vec, order : int = 2, filtered : bool = False) -> f
     zeta=0
     pstrings=list(map(lambda plist : ''.join(plist),product(['I','X','Y','Z'],repeat=n_qubits)))
 
-    def expval(pstring):
-        sparse_mat=PauliComposer(pstring).to_sparse()
-        val=(abs((state_vec_H.dot(sparse_mat.dot(state_vec))) [0,0])**(2*order))/d
-        return val
-    
-    zeta=sum(Parallel(n_jobs=-1,return_as='generator_unordered')(delayed(expval)(pstring) for pstring in pstrings))
-    #zeta=sum(zeta_vals)
-
-    # zeta_vals=(
-    #     (abs((
-    #         state_vec_H.dot(PauliComposer(pstring).to_sparse().dot(state_vec)))[0,0]
-    #     )**(2*order))/d
-    # for pstring in pstrings)
-    # zeta=sum(zeta_vals)
-    # for pstring in pstrings:
-    #     sparse_mat=PauliComposer(pstring).to_sparse()
-    #     zeta+=(abs((state_vec_H.dot(sparse_mat.dot(state_vec))) [0,0])**(2*order))/d
+    if parallel:    
+        def expval(pstring):
+            sparse_mat=PauliComposer(pstring).to_sparse()
+            val=(abs((state_vec_H.dot(sparse_mat.dot(state_vec))) [0,0])**(2*order))/d
+            del sparse_mat
+            return val
+        
+        zeta=sum(Parallel(n_jobs=n_threads,return_as='generator_unordered')(delayed(expval)(pstring) for pstring in pstrings))
+    else:
+        for pstring in pstrings:
+         sparse_mat=PauliComposer(pstring).to_sparse()
+         zeta+=(abs((state_vec_H.dot(sparse_mat.dot(state_vec))) [0,0])**(2*order))/d
     if filtered:
         zeta=(zeta-1/d)*d/(d-1)
     Mq=-np.log2(zeta)/(order-1)
