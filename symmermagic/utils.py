@@ -65,7 +65,9 @@ def stab_entropy_exact(state_vec, order : int = 2, filtered : bool = False, para
             del sparse_mat
             return val
         
-        zeta=sum(Parallel(n_jobs=n_threads,return_as='generator_unordered')(delayed(expval)(pstring) for pstring in pstrings))
+        zeta_vals=Parallel(n_jobs=n_threads,return_as='generator_unordered')(delayed(expval)(pstring) for pstring in pstrings)
+        zeta = accumulator_sum(zeta_vals)
+
     else:
         for pstring in pstrings:
          sparse_mat=PauliComposer(pstring).to_sparse()
