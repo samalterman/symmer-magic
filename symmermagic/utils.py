@@ -61,7 +61,6 @@ def stab_entropy_exact(state_vec, order : int = 2, filtered : bool = False, para
 
     if parallel:    
         def expval(pstring):
-            print(f'Thread ID: {threading.get_ident()}')
             sparse_mat=PauliComposer(pstring).to_sparse()
             val=(abs((state_vec_H.dot(sparse_mat.dot(state_vec))) [0,0])**(2*order))/d
             del sparse_mat
