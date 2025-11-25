@@ -5,8 +5,7 @@ from itertools import chain, product
 import random
 from numbers import Number
 from joblib import Parallel, delayed, parallel_config
-from dask.distributed import Client, LocalCluster
-from dask_jobqueue import SLURMCluster
+import warnings
 
 def stab_renyi_entropy(state: QuantumState, order: int=2, filtered : bool = False, approach : str = 'exact', parallel : bool = False, n_threads : int = 4, n_samples : int= 1e6, cluster : bool = False):
     """Calculates the stabilizer Renyi entropy of the state. See arXiv:2106.12567 for details.
@@ -27,8 +26,8 @@ def stab_renyi_entropy(state: QuantumState, order: int=2, filtered : bool = Fals
     n_qubits=state.n_qubits
     state_vec=state.to_sparse_matrix
     approach.lower()
-    if n_qubits > 12 and approach == 'exact' and not parallel:
-        print("Warning: Direct computation for large states may take an extremely long time!")
+    if n_qubits > 12 and approach == 'exact':
+        warnings.warn('Warning: Direct computation for n > 12 could take significant time unless you have a very nice computer.')
 
     match approach:
         case 'exact' :
@@ -62,13 +61,12 @@ def stab_entropy_exact(state_vec, order : int = 2, filtered : bool = False, para
 
     if parallel:    
         def expval(pstring):
-            sparse_mat=PauliComposer(pstring).to_sparse()
-            val=(abs((state_vec_H.dot(sparse_mat.dot(state_vec))) [0,0])**(2*order))/d
-            del sparse_mat
+            val=(abs((state_vec_H.dot(pstr_to_sparse(pstring).dot(state_vec))) [0,0])**(2*order))/d
             return val
-        with LocalCluster() as cluster, Client(cluster) as client:
-            with parallel_config(backend='loky'):
-                zeta_vals=Parallel(n_jobs=n_threads,return_as='generator_unordered',backend='threading')(delayed(expval)(pstring) for pstring in pstrings)
+        
+        batches = min(int((d**2)/n_threads),3000)
+        with parallel_config(backend='loky'):
+            zeta_vals=Parallel(n_jobs=n_threads,return_as='generator_unordered',batch_size=batches)(delayed(expval)(pstring) for pstring in pstrings)
         zeta = accumulator_sum(zeta_vals)
 
     else:
@@ -211,6 +209,65 @@ def accumulator_sum(generator):
     for value in generator:
         total += value
     return total
+
+def pstr_to_sparse(entry: str):
+    n = len(entry)
+    # Compute some helpful powers
+    dim = 1<<n
+
+    # Store the entry converting the Pauli labels into uppercase
+    entry = entry.upper()
+    paulis = list(set(entry))
+
+    # (-i)**(0+4m)=1, (-i)**(1+4m)=-i, (-i)**(2+4m)=-1, (-i)**(3+4m)=i
+    mat_ent = {0: 1, 1: -1j, 2: -1, 3: 1j}
+
+    # Count the number of ny mod 4
+    ny = entry.count('Y') & 3
+    init_ent = mat_ent[ny]
+    init_entry = init_ent
+    iscomplex = np.iscomplex(init_ent)
+
+    # Reverse the input and its 'binary' representation
+    rev_entry = entry[::-1]
+    rev_bin_entry = ''.join([BINARY[ent] for ent in rev_entry])
+
+    # Column of the first-row non-zero entry
+    col_val = int(''.join([BINARY[ent] for ent in entry]), 2)
+
+    # Initialize an empty (2**n x 3)-matrix (rows, columns, entries)
+    # row = np.arange(self.dim) 
+    col = np.empty(dim, dtype=np.int32)
+    # FIXME: storing rows and columns as np.complex64 since NumPy arrays
+    # must have the same data type for each entry. Consider using
+    # pd.DataFrame?
+
+    col[0] = col_val  # first column
+    # The AND bit-operator computes more rapidly mods of 2**n. Check that:
+    #    x mod 2**n == x & (2**n-1)
+    if iscomplex:
+        ent = np.full(dim, init_entry, dtype=np.complex64)
+    else:
+        ent = np.full(dim, init_entry, dtype=np.int8)
+
+    for ind in range(n):
+        p = 1<<int(ind)  # left-shift of bits ('1' (1) << 2 = '100' (4))
+        p2 = p<<1
+        disp = p if rev_bin_entry[ind] == '0' else -p  # displacements
+        col[p:p2] = col[0:p] + disp  # compute new columns
+        # col[p:p2] = col[0:p] ^ p  # alternative for computing column
+
+        # Store the new entries using old ones
+        if rev_entry[ind] in ['I', 'X']:
+            ent[p:p2] = ent[0:p]
+        else:
+            ent[p:p2] = -ent[0:p]
+    row = np.arange(dim)
+    return sp.sparse.csr_matrix((ent, (row, col)),
+                             shape=(dim, dim))
+
+    
+
 
 
 """
