@@ -3,11 +3,10 @@ import numpy as np
 import scipy as sp
 from itertools import chain, product
 import random
-from numbers import Number
 from joblib import Parallel, delayed, parallel_config
 import warnings
 
-def stab_renyi_entropy(state: QuantumState, order: int=2, filtered : bool = False, approach : str = 'exact', parallel : bool = False, n_threads : int = 4, n_samples : int= 1e6, cluster : bool = False):
+def stab_renyi_entropy(state: QuantumState, order: int=2, filtered : bool = False, approach : str = 'exact', parallel : bool = False, n_proc : int = 4, n_samples : int= 1e6):
     """Calculates the stabilizer Renyi entropy of the state. See arXiv:2106.12567 for details.
     
     Args:
@@ -17,7 +16,7 @@ def stab_renyi_entropy(state: QuantumState, order: int=2, filtered : bool = Fals
         approach (str, optional): which calculation approach to use. Valid options are {'exact', 'metropolis','perfectpaulis'}. Default is 'Exact'.
         n_samples (int, optional): the number of samples to use (only applies to 'metropolis' and 'perfectpaulis'). Default is 1e6.
         parallel (bool, optional): whether to use parallelization approaches (only applies to 'exact' and 'perfectpaulis'). Default is False.
-        n_threads (int, optional): if using parallelization, the number of threads to use. Default is 4.
+        n_proc (int, optional): if using parallelization, the number of processes to use. Default is 4.
 
     Returns:
         Mq: the calculated stabilizer Renyi entropy
@@ -31,7 +30,7 @@ def stab_renyi_entropy(state: QuantumState, order: int=2, filtered : bool = Fals
 
     match approach:
         case 'exact' :
-            Mq=stab_entropy_exact(state_vec=state_vec,order=order,filtered=filtered,parallel=parallel,n_threads=n_threads)
+            Mq=stab_entropy_exact(state_vec=state_vec,order=order,filtered=filtered,parallel=parallel,n_proc=n_proc)
         case 'metropolis' :
             Mq=stab_entropy_metropolis(state_vec,order=order,filtered=filtered,n_samples=n_samples)
         case 'perfectpaulis' :
@@ -40,14 +39,14 @@ def stab_renyi_entropy(state: QuantumState, order: int=2, filtered : bool = Fals
             raise ValueError('Unrecognised calculation strategy.')
     return Mq
 
-def stab_entropy_exact(state_vec, order : int = 2, filtered : bool = False, parallel : bool = False, n_threads : int = 4) -> float:
+def stab_entropy_exact(state_vec, order : int = 2, filtered : bool = False, parallel : bool = False, n_proc : int = 4) -> float:
     """Calculates the exact stabilizer Renyi entropy of the given state by sampling all possible Pauli strings.
     Args: 
         state_vec (csr_matrix): the sparse matrix representation of the state to calculate the stabilizer entropy for
         order (int): the order of the stabilizer entropy to calculate. default is 2
         filtered (bool): whether to calculate the filtered stabilizer entropy instead of the unfilitered stabilizer entropy. See arXiv:2312.11631 for details. default is False.
         parallel (bool, optional): whether to use parallelization approaches. Default is False.
-        n_threads (int, optional): if using parallelization, the number of threads to use. Default is 4.
+        n_proc (int, optional): if using parallelization, the number of processes to use. Default is 4.
     Returns:
         Mq (float): the calculated stabilizer entropy """
     
@@ -64,14 +63,14 @@ def stab_entropy_exact(state_vec, order : int = 2, filtered : bool = False, para
             val=(abs((state_vec_H.dot(pstr_to_sparse(pstring).dot(state_vec))) [0,0])**(2*order))/d
             return val
         
-        batches = min(int((d**2)/n_threads),3000)
+        batches = min(int((d**2)/n_proc),3000)
         with parallel_config(backend='loky'):
-            zeta_vals=Parallel(n_jobs=n_threads,return_as='generator_unordered',batch_size=batches)(delayed(expval)(pstring) for pstring in pstrings)
+            zeta_vals=Parallel(n_jobs=n_proc,return_as='generator_unordered',batch_size=batches)(delayed(expval)(pstring) for pstring in pstrings)
         zeta = accumulator_sum(zeta_vals)
 
     else:
         for pstring in pstrings:
-         sparse_mat=PauliComposer(pstring).to_sparse()
+         sparse_mat=pstr_to_sparse(pstring)
          zeta+=(abs((state_vec_H.dot(sparse_mat.dot(state_vec))) [0,0])**(2*order))/d
     if filtered:
         zeta=(zeta-1/d)*d/(d-1)
@@ -94,10 +93,8 @@ def stab_entropy_metropolis(state_vec, order : int = 2, filtered : bool = False,
     state_vec_H=state_vec.getH()
     n_qubits=int(n_qubits)
     d=2**n_qubits
-    pool_range=list(range(2*n_qubits))
 
     prob_list=[]
-    loop=True
     rng = np.random.default_rng()
 
     # find starting state which has high enough probability
@@ -156,19 +153,6 @@ def stab_entropy_metropolis(state_vec, order : int = 2, filtered : bool = False,
     Mq=-np.log2(zeta)/(order-1)
     return float(Mq)
 
-def stab_entropy_perfectpaulis(state : QuantumState, order : int = 2, filtered : bool = False, n_samples : int = 1e5) -> float:
-     """Approximates the stabilizer entropy of the given state using "perfect Pauli" sampling of matrix product states. See arXiv:2303.05536 for details.
-    Args: 
-        state QuantumState: the sparse matrix representation of the state to calculate the stabilizer entropy for
-        order (int): the order of the stabilizer entropy to calculate. default is 2
-        filtered (bool): whether to calculate the filtered stabilizer entropy instead of the unfilitered stabilizer entropy. See arXiv:2312.11631 for details. default is False.
-        n_samples (int): the number of samples to use. default is 1e6
-
-    Returns:
-        Mq (float): the calculated stabilizer entropy 
-    """
-     
-
 def stab_linear_entropy(state : QuantumState):
     """Calculates the stabilizer linear entropy of the state. See arXiv:2106.12567 for details.
     
@@ -180,11 +164,12 @@ def stab_linear_entropy(state : QuantumState):
     """
     zeta=0
     n_qubits=state.n_qubits
-    symp_list=[list(chain.from_iterable(ps)) for ps in product([[0,0],[0,1],[1,0],[1,1]],repeat=n_qubits)]
-    for symp in symp_list:
-        pauli_word=PauliwordOp(symp_matrix=symp,coeff_vec=[1])
-        exval=np.real(state.dagger * pauli_word * state)
-        zeta +=exval**(4)
+    state_vec=state.to_sparse_matrix
+    state_vec_H=state.getH()
+    pstrings=list(map(lambda plist : ''.join(plist),product(['I','X','Y','Z'],repeat=n_qubits)))
+    for pstring in pstrings:
+        sparse_mat=pstr_to_sparse(pstring)
+        zeta+=(abs(state_vec_H.dot(sparse_mat.dot(state_vec)))[0,0])**4
     Mlin=1-zeta/(2**n_qubits)
     return Mlin
 
@@ -199,7 +184,7 @@ def pauli_spectrum(state : QuantumState) -> float:
     probs=[]
     pstrings=list(map(lambda plist : ''.join(plist),product(['I','X','Y','Z'],repeat=n_qubits)))
     for pstring in pstrings:
-        sparse_mat=PauliComposer(pstring).to_sparse()
+        sparse_mat=pstr_to_sparse(pstring)
         probs.append((abs((state_vec_H.dot(sparse_mat.dot(state_vec))) [0,0])**2)/d)
     return probs
 
@@ -211,13 +196,15 @@ def accumulator_sum(generator):
     return total
 
 def pstr_to_sparse(entry: str):
+    """Helper method for efficiently converting a Pauli string into a sparse matrix using the PauliComposer algorithm. See https://arxiv.org/abs/2301.00560 for details."""
+    BINARY = {'I': '0', 'X': '1', 'Y': '1', 'Z': '0'}
     n = len(entry)
     # Compute some helpful powers
     dim = 1<<n
 
     # Store the entry converting the Pauli labels into uppercase
     entry = entry.upper()
-    paulis = list(set(entry))
+    #paulis = list(set(entry))
 
     # (-i)**(0+4m)=1, (-i)**(1+4m)=-i, (-i)**(2+4m)=-1, (-i)**(3+4m)=i
     mat_ent = {0: 1, 1: -1j, 2: -1, 3: 1j}
@@ -265,100 +252,3 @@ def pstr_to_sparse(entry: str):
     row = np.arange(dim)
     return sp.sparse.csr_matrix((ent, (row, col)),
                              shape=(dim, dim))
-
-    
-
-
-
-"""
-PauliComposer class definition from https://github.com/sebastianvromero/PauliComposer/
-
-See: https://arxiv.org/abs/2301.00560
-"""
-
-PAULI_LABELS = ['I', 'X', 'Y', 'Z']
-NUM2LABEL = {ind: PAULI_LABELS[ind] for ind in range(len(PAULI_LABELS))}
-BINARY = {'I': '0', 'X': '1', 'Y': '1', 'Z': '0'}
-PAULI = {'I': np.eye(2, dtype=np.uint8),
-         'X': np.array([[0, 1], [1, 0]], dtype=np.uint8),
-         'Y': np.array([[0, -1j], [1j, 0]], dtype=np.complex64),
-         'Z': np.array([[1, 0], [0, -1]], dtype=np.int8)}
-
-
-class PauliComposer:
-
-    def __init__(self, entry: str, weight: Number = None):
-        # Compute the number of dimensions for the given entry
-        n = len(entry)
-        self.n = n
-
-        # Compute some helpful powers
-        self.dim = 1<<n
-
-        # Store the entry converting the Pauli labels into uppercase
-        self.entry = entry.upper()
-        self.paulis = list(set(self.entry))
-
-        # (-i)**(0+4m)=1, (-i)**(1+4m)=-i, (-i)**(2+4m)=-1, (-i)**(3+4m)=i
-        mat_ent = {0: 1, 1: -1j, 2: -1, 3: 1j}
-
-        # Count the number of ny mod 4
-        self.ny = self.entry.count('Y') & 3
-        init_ent = mat_ent[self.ny]
-        if weight is not None:
-            # first non-zero entry
-            init_ent *= weight
-        self.init_entry = init_ent
-        self.iscomplex = np.iscomplex(init_ent)
-
-        # Reverse the input and its 'binary' representation
-        rev_entry = self.entry[::-1]
-        rev_bin_entry = ''.join([BINARY[ent] for ent in rev_entry])
-
-        # Column of the first-row non-zero entry
-        col_val = int(''.join([BINARY[ent] for ent in self.entry]), 2)
-
-        # Initialize an empty (2**n x 3)-matrix (rows, columns, entries)
-        # row = np.arange(self.dim) 
-        col = np.empty(self.dim, dtype=np.int32)
-        # FIXME: storing rows and columns as np.complex64 since NumPy arrays
-        # must have the same data type for each entry. Consider using
-        # pd.DataFrame?
-
-        col[0] = col_val  # first column
-        # The AND bit-operator computes more rapidly mods of 2**n. Check that:
-        #    x mod 2**n == x & (2**n-1)
-        if weight is not None:
-            if self.iscomplex:
-                ent = np.full(self.dim, self.init_entry)
-            else:
-                ent = np.full(self.dim, float(self.init_entry))
-        else:
-            if self.iscomplex:
-                ent = np.full(self.dim, self.init_entry, dtype=np.complex64)
-            else:
-                ent = np.full(self.dim, self.init_entry, dtype=np.int8)
-
-        for ind in range(n):
-            p = 1<<int(ind)  # left-shift of bits ('1' (1) << 2 = '100' (4))
-            p2 = p<<1
-            disp = p if rev_bin_entry[ind] == '0' else -p  # displacements
-            col[p:p2] = col[0:p] + disp  # compute new columns
-            # col[p:p2] = col[0:p] ^ p  # alternative for computing column
-
-            # Store the new entries using old ones
-            if rev_entry[ind] in ['I', 'X']:
-                ent[p:p2] = ent[0:p]
-            else:
-                ent[p:p2] = -ent[0:p]
-
-        self.col = col
-        self.mat = ent
-
-    def to_sparse(self):
-        self.row = np.arange(self.dim)
-        return sp.sparse.csr_matrix((self.mat, (self.row, self.col)),
-                             shape=(self.dim, self.dim))
-
-    def to_matrix(self):
-        return self.to_sparse().toarray()
