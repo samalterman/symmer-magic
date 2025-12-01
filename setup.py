@@ -7,7 +7,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="symmer-magic",
-    version="0.1.6",
+    version="0.2.0",
     author="Sam Alterman",
     author_email="samalterman@gmail.com",
     description="SRE calculations for the Symmer quantum chemistry package",

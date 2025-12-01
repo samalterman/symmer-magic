@@ -2,11 +2,10 @@ from symmer.operators import PauliwordOp, QuantumState
 import numpy as np
 import scipy as sp
 from itertools import chain, product
-import random
 from joblib import Parallel, delayed, parallel_config
 import warnings
 
-def stab_renyi_entropy(state: QuantumState, order: int=2, filtered : bool = False, approach : str = 'exact', parallel : bool = False, n_proc : int = 4, n_samples : int= 1e6):
+def stab_renyi_entropy(state: QuantumState, order: int=2, filtered : bool = False, approach : str = 'exact', parallel : bool = False, n_proc : int = 4, n_samples : int= int(1e6)):
     """Calculates the stabilizer Renyi entropy of the state. See arXiv:2106.12567 for details.
     
     Args:
@@ -24,11 +23,10 @@ def stab_renyi_entropy(state: QuantumState, order: int=2, filtered : bool = Fals
     Mq=0
     n_qubits=state.n_qubits
     state_vec=state.to_sparse_matrix
-    approach.lower()
     if n_qubits > 12 and approach == 'exact':
         warnings.warn('Warning: Direct computation for n > 12 could take significant time unless you have a very nice computer.')
 
-    match approach:
+    match approach.lower():
         case 'exact' :
             Mq=stab_entropy_exact(state_vec=state_vec,order=order,filtered=filtered,parallel=parallel,n_proc=n_proc)
         case 'metropolis' :
@@ -96,6 +94,8 @@ def stab_entropy_metropolis(state_vec, order : int = 2, filtered : bool = False,
 
     prob_list=[]
     rng = np.random.default_rng()
+    # pre generate n_samples-1 random numbers
+    random_probs=iter(rng.random(int(n_samples)-1))
 
     # find starting state which has high enough probability
     while len(prob_list)<1:
@@ -136,8 +136,8 @@ def stab_entropy_metropolis(state_vec, order : int = 2, filtered : bool = False,
         sparse_next=pauli_next.to_sparse_matrix
         p_next = abs((state_vec_H.dot(sparse_next.dot(state_vec)))[0,0])**2
         hop_prob = p_next/p_this
-        # randomly generate an acceptance threshold from 0 to 1
-        accept_thresh=random.random()
+        # grab the next random number from our pre-generated list
+        accept_thresh=random_probs.__next__()
 
         # check if the hopping probability is greater than the acceptance threshold
         if hop_prob > accept_thresh:
@@ -152,6 +152,105 @@ def stab_entropy_metropolis(state_vec, order : int = 2, filtered : bool = False,
         zeta=((d-1)*zeta+1)/d
     Mq=-np.log2(zeta)/(order-1)
     return float(Mq)
+
+def stab_entropy_perfectpaulis(state_vec, order : int = 2, filtered : bool = False, n_samples : int = 1e5, parallel : bool = False, n_proc : int =4) -> float:
+    """Approximates the stabilizer entropy of the given state using "perfect Pauli" sampling of matrix product states. See arXiv:2303.05536 for details.
+    
+    Args: 
+        state_vec: the sparse matrix representation of the state to calculate the stabilizer entropy for
+        order (int): the order of the stabilizer entropy to calculate. default is 2
+        filtered (bool): whether to calculate the filtered stabilizer entropy instead of the unfilitered stabilizer entropy. See arXiv:2312.11631 for details. default is False.
+        n_samples (int): the number of samples to use. default is 1e5
+        parallel (bool, optional): whether to use parallelization approaches. Default is False.
+        n_proc (int, optional): if using parallelization, the number of processes to use. Default is 4.
+
+    Returns:
+        Mq (float): the calculated stabilizer entropy 
+    """
+    n_qubits=float(np.log2(state_vec.shape[0]))
+    assert n_qubits.is_integer(), 'state is wrong shape!'
+    state_vec_H=state_vec.getH()
+    n_qubits=int(n_qubits)
+    d=2**n_qubits
+
+    if parallel:
+        with parallel_config(backend='loky'):
+            paulis,probs = zip(*Parallel(n_jobs=n_proc,return_as='generator_unordered')(delayed(generate_perfect_pauli)(state_vec,state_vec_H) for i in range(n_samples)))
+    else:
+        paulis,probs = zip(*[generate_perfect_pauli(state_vec,state_vec_H) for i in range(n_samples)])
+    zeta = sum((d*p)**(order-1) for p in probs)/n_samples
+    if filtered:
+        zeta=(zeta-1/d)*d/(d-1)
+    Mq=-np.log2(zeta)/(order-1)
+    return float(Mq)
+
+def generate_perfect_pauli(state_vec,state_vec_H = -1) -> tuple[str, float]:
+    """Generates a 'Perfect Pauli' for the given state along with its probability. See arXiv:2303.05536 for details.
+
+    Args: 
+        state_vec   : the sparse matrix representation of the state to calculate the stabilizer entropy for
+        state_vec_H : the complex conjugate of state_vec (optional, but faster evaluation if given in advance)
+
+    Returns
+        pstring (string)    :   the perfect Pauli string generated
+        prob (float)        :   the associated probability
+    """
+    n_qubits=float(np.log2(state_vec.shape[0]))
+    assert n_qubits.is_integer(), 'state is wrong shape!'
+    n_qubits=int(n_qubits)
+    d=2**n_qubits
+    
+    #if we didn't get the hermitian conjugate of the state, calculate it
+    if isinstance(state_vec_H,int):
+        state_vec_H=state_vec.getH()
+
+    pstring = ''
+    prob = 1
+    rng = np.random.default_rng()
+    random_vals=iter(rng.random(n_qubits))
+
+    ### CODE TO SETUP TENSOR NETWORK CALC GOES HERE
+    foo=0.25 #FIXME dummy variable to test out code
+
+    # now we iterate over the rest of the Pauli string
+    while len(pstring) < n_qubits:
+        rand_val = random_vals.__next__()
+        prob_i = foo ### CODE TO CALCULATE CONDITIONAL I PROB GOES HERE
+
+        if prob_i >= rand_val: # if prob_i is above the random threshold, we'll add an I!
+            pstring +='I'
+            prob *= prob_i
+            ### WHATEVER WE NEED TO DO TO UPDATE THE STATE
+            continue
+        
+        # if we're still here, it must not have been I. remove the I probability we've discarded and try X
+        rand_val -= prob_i
+        prob_x= foo  ### CODE TO CALCULATE CONDITIONAL X PROB GOES HERE
+
+        if prob_x >= rand_val : # if prob_x is above the random threshold, we add an X!
+            pstring += 'X'
+            prob *= prob_x
+            ### WHATEVER WE NEED TO DO TO UPDATE THE STATE
+            continue 
+
+        # if we're still here, it must not have been I. remove the I probability we've discarded and try X
+        rand_val -= prob_x # remove the x probability we've discarded
+        prob_y = foo ### CODE TO CALCULATE CONDITIONAL Y PROB FOR THE FIRST OPERATOR GOES HERE
+
+        if prob_y >= rand_val : # if prob_y is above the random threshold, we'll add a Y!
+            pstring += 'Y'
+            prob *= prob_y
+            ### WHATEVER WE NEED TO DO TO UPDATE THE STATE
+            continue
+        
+        prob_z=1-prob_i-prob_x-prob_y  # if its not I, X, or Y it must be Z (there's no secret 5th Pauli operator!)
+        pstring += 'Z'
+        prob *= prob_z
+        ### WHATEVER WE NEED TO DO TO UPDATE THE STATE
+        continue
+    return pstring, prob
+
+
 
 def stab_linear_entropy(state : QuantumState):
     """Calculates the stabilizer linear entropy of the state. See arXiv:2106.12567 for details.
