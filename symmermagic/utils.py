@@ -272,7 +272,7 @@ def stab_linear_entropy(state : QuantumState):
     Mlin=1-zeta/(2**n_qubits)
     return Mlin
 
-def pauli_spectrum(state : QuantumState) -> float:
+def pauli_spectrum(state : QuantumState) -> tuple[str,float]:
     """Calculates the Pauli spectrum of the given state by sampling all possible Pauli strings"""
     state_vec=state.to_sparse_matrix
     n_qubits=float(np.log2(state_vec.shape[0]))
@@ -285,7 +285,7 @@ def pauli_spectrum(state : QuantumState) -> float:
     for pstring in pstrings:
         sparse_mat=pstr_to_sparse(pstring)
         probs.append((abs((state_vec_H.dot(sparse_mat.dot(state_vec))) [0,0])**2)/d)
-    return probs
+    return pstrings,probs
 
 def accumulator_sum(generator):
     """Helper method for effectively summing generators"""
