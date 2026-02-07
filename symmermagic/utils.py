@@ -39,6 +39,49 @@ def stab_renyi_entropy(state: QuantumState, order: int=2, filtered : bool = Fals
             raise ValueError('Unrecognised calculation strategy.')
     return Mq
 
+def stab_entropy_symp(state, order : int = 2, filtered : bool = False, parallel : bool = False, n_proc : int = 4) -> float:
+    """Calculates the exact stabilizer Renyi entropy of the given state by being cheeky in the symplectic representation.
+    Args: 
+        state_vec (QuantumState): the sparse matrix representation of the state to calculate the stabilizer entropy for
+        order (int): the order of the stabilizer entropy to calculate. default is 2
+        filtered (bool): whether to calculate the filtered stabilizer entropy instead of the unfilitered stabilizer entropy. See arXiv:2312.11631 for details. default is False.
+        parallel (bool, optional): whether to use parallelization approaches. Default is False.
+        n_proc (int, optional): if using parallelization, the number of processes to use. Default is 4.
+    Returns:
+        Mq (float): the calculated stabilizer entropy """
+    
+    n_qubits=state.n_qubits
+    # find the bit string representations of all computational basis states present in the state
+    state_dict=state.to_dictionary
+    c_states=list(int(key,2) for key in state_dict.keys())
+    # generate all the X symplectic matrices that could be non-zero
+    X_symps=[]
+    d=2**n_qubits
+    for state_1 in c_states:
+        for state_2 in c_states:
+            new_x = state_1^state_2
+            if not (new_x in X_symps):
+                X_symps.append(new_x)
+    zeta=0
+    for x_symp,z_symp in product(X_symps,range(2**n_qubits)):
+        phase=(1j)**((x_symp&z_symp).bit_count())
+        tot=0
+        for state_1 in c_states:
+            state_2=state_1^x_symp
+            if not (state_2 in c_states):
+                continue
+            state_1_str=format(state_1,'0'+str(n_qubits)+'b')
+            state_2_str=format(state_2,'0'+str(n_qubits)+'b')
+            tot+=state_dict[state_1_str]*np.conj(state_dict[state_2_str])*phase*(-1)**((state_1&z_symp).bit_count())
+        zeta+=(abs(tot)**(2*order))/d
+    if filtered:
+        zeta=(zeta-1/d)*d/(d-1)
+    Mq=-np.log2(zeta)/(order-1)
+    return Mq
+
+
+
+
 def stab_entropy_exact(state_vec, order : int = 2, filtered : bool = False, parallel : bool = False, n_proc : int = 4) -> float:
     """Calculates the exact stabilizer Renyi entropy of the given state by sampling all possible Pauli strings.
     Args: 
