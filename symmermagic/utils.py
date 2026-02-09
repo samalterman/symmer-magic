@@ -5,8 +5,9 @@ from itertools import chain, product
 import random
 from joblib import Parallel, delayed, parallel_config
 import warnings
+import time
 
-def stab_renyi_entropy(state: QuantumState, order: int=2, filtered : bool = False, approach : str = 'exact', parallel : bool = False, n_proc : int = 4, n_samples : int= 1e6):
+def stab_renyi_entropy(state: QuantumState, order: int=2, filtered : bool = False, approach : str = 'exact', parallel : bool = False, n_proc : int = 4, n_samples : int= 1e6,gpu : bool = False, gpu_device : int = None):
     """Calculates the stabilizer Renyi entropy of the state. See arXiv:2106.12567 for details.
     
     Args:
@@ -22,21 +23,16 @@ def stab_renyi_entropy(state: QuantumState, order: int=2, filtered : bool = Fals
         Mq: the calculated stabilizer Renyi entropy
     """
     Mq=0
-    n_qubits=state.n_qubits
-    state_vec=state.to_sparse_matrix
-    approach.lower()
-    if n_qubits > 12 and approach == 'exact':
-        warnings.warn('Warning: Direct computation for n > 12 could take significant time unless you have a very nice computer.')
+    approach=approach.lower()
 
-    match approach:
-        case 'exact' :
-            Mq=stab_entropy_exact(state_vec=state_vec,order=order,filtered=filtered,parallel=parallel,n_proc=n_proc)
-        case 'metropolis' :
-            Mq=stab_entropy_metropolis(state_vec,order=order,filtered=filtered,n_samples=n_samples)
-        case 'perfectpaulis' :
-            print('perfectpaulis is not yet implemented. Try again, eager beaver!')
-        case _:
-            raise ValueError('Unrecognised calculation strategy.')
+    if approach=='exact':
+        Mq=stab_entropy_symp(state=state,order=order,filtered=filtered,parallel=parallel,n_proc=n_proc,gpu=gpu, gpu_device=gpu_device)
+    elif approach=='metropolis':
+        state_vec=state.to_sparse_matrix
+        Mq=stab_entropy_metropolis(state_vec,order=order,filtered=filtered,n_samples=n_samples)
+    else:
+        raise ValueError('Unrecognised calculation strategy.')
+            
     return Mq
 
 def _fwht(a):
@@ -83,7 +79,7 @@ def _build_a_vectors(X_symps_batch, c_states, c_states_set, coeff_dict, conj_dic
 def stab_entropy_symp(state, order : int = 2, filtered : bool = False, parallel : bool = False, n_proc : int = 4, gpu : bool = False, gpu_device : int = None) -> float:
     """Calculates the exact stabilizer Renyi entropy of the given state by being cheeky in the symplectic representation.
     Args:
-        state_vec (QuantumState): the sparse matrix representation of the state to calculate the stabilizer entropy for
+        state (QuantumState): the state to calculate the stabilizer entropy for
         order (int): the order of the stabilizer entropy to calculate. default is 2
         filtered (bool): whether to calculate the filtered stabilizer entropy instead of the unfilitered stabilizer entropy. See arXiv:2312.11631 for details. default is False.
         parallel (bool, optional): whether to use CPU parallelization via joblib. Default is False.
@@ -179,7 +175,6 @@ def _symp_gpu(cp, X_symps, c_states, c_states_set, coeff_dict, conj_dict, d, ord
 
 
 
-
 def stab_entropy_exact(state_vec, order : int = 2, filtered : bool = False, parallel : bool = False, n_proc : int = 4) -> float:
     """Calculates the exact stabilizer Renyi entropy of the given state by sampling all possible Pauli strings.
     Args: 
@@ -190,6 +185,7 @@ def stab_entropy_exact(state_vec, order : int = 2, filtered : bool = False, para
         n_proc (int, optional): if using parallelization, the number of processes to use. Default is 4.
     Returns:
         Mq (float): the calculated stabilizer entropy """
+    ###deprecated!
     
     n_qubits=float(np.log2(state_vec.shape[0]))
     assert n_qubits.is_integer(), 'state is wrong shape!'
