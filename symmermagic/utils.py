@@ -129,9 +129,10 @@ def stab_entropy_symp(state, order : int = 2, filtered : bool = False, parallel 
                     a[s1]=coeff_dict[s1]*conj_dict[s2]
             f=_fwht(a)
             return np.sum(np.abs(f)**(2*order))/d
+            
         with parallel_config(backend='loky'):
             zeta_vals=Parallel(n_jobs=n_proc)(delayed(_zeta_for_x)(x) for x in X_symps)
-        zeta=sum(zeta_vals)
+        zeta=accumulator_sum(zeta_vals)
     else:
         def _zeta_for_x(x_symp):
             a=np.zeros(d, dtype=complex)
@@ -292,9 +293,6 @@ def stab_entropy_metropolis(state_vec, order : int = 2, filtered : bool = False,
 
 def stab_linear_entropy(state : QuantumState):
     """Calculates the stabilizer linear entropy of the state. See arXiv:2106.12567 for details.
-    
-    Args:
-    return_xi_vec (bool, optional): whether to also return the vector of probabilities. Default is False.
 
     Returns:
     Mlin: the calculated stabilizer linear entropy
