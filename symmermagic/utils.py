@@ -131,7 +131,7 @@ def stab_entropy_symp(state, order : int = 2, filtered : bool = False, parallel 
             return np.sum(np.abs(f)**(2*order))/d
             
         with parallel_config(backend='loky'):
-            zeta_vals=Parallel(n_jobs=n_proc)(delayed(_zeta_for_x)(x) for x in X_symps)
+            zeta_vals=Parallel(n_jobs=n_proc,return_as='generator_unordered')(delayed(_zeta_for_x)(x) for x in X_symps)
         zeta=accumulator_sum(zeta_vals)
     else:
         def _zeta_for_x(x_symp):
