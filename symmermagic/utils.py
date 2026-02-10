@@ -106,7 +106,7 @@ def stab_entropy_symp(state, order : int = 2, filtered : bool = False, parallel 
                 f"No CUDA GPU available (are you on a login node?). "
                 f"Submit to a GPU node or set CUDA_VISIBLE_DEVICES."
             )
-
+    t1=time.perf_counter()
     n_qubits=state.n_qubits
     d=2**n_qubits
     # build integer-keyed coefficient dict for O(1) lookup without string formatting
@@ -115,8 +115,12 @@ def stab_entropy_symp(state, order : int = 2, filtered : bool = False, parallel 
     conj_dict={k: np.conj(v) for k, v in coeff_dict.items()}
     c_states=list(coeff_dict.keys())
     c_states_set=set(c_states)
+    t2=time.perf_counter()
+    print(f'Setup time: {round(t2-t1,6)}s')
     # generate all the X symplectic vectors that could give non-zero contributions
     X_symps=list({s1^s2 for s1 in c_states for s2 in c_states})
+    t3=time.perf_counter()
+    print(f'X symps generation time: {round(t3-t2,6)}s')
 
     if gpu:
         zeta=_symp_gpu(cp, X_symps, c_states, c_states_set, coeff_dict, conj_dict, d, order)
@@ -129,9 +133,9 @@ def stab_entropy_symp(state, order : int = 2, filtered : bool = False, parallel 
                     a[s1]=coeff_dict[s1]*conj_dict[s2]
             f=_fwht(a)
             return np.sum(np.abs(f)**(2*order))/d
-            
+        batches = min(int(len(X_symps)/n_proc),3000)
         with parallel_config(backend='loky'):
-            zeta_vals=Parallel(n_jobs=n_proc,return_as='generator_unordered')(delayed(_zeta_for_x)(x) for x in X_symps)
+            zeta_vals=Parallel(n_jobs=n_proc,return_as='generator_unordered',batch_size=batches)(delayed(_zeta_for_x)(x) for x in X_symps)
         zeta=accumulator_sum(zeta_vals)
     else:
         def _zeta_for_x(x_symp):
@@ -143,7 +147,8 @@ def stab_entropy_symp(state, order : int = 2, filtered : bool = False, parallel 
             f=_fwht(a)
             return np.sum(np.abs(f)**(2*order))/d
         zeta=sum(_zeta_for_x(x) for x in X_symps)
-
+    t4=time.perf_counter()
+    print(f'Zeta calculation time: {round(t4-t3,6)}s')
     if filtered:
         zeta=(zeta-1/d)*d/(d-1)
     Mq=-np.log2(zeta)/(order-1)
