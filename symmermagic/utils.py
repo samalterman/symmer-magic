@@ -136,14 +136,18 @@ def stab_entropy_symp(state, order : int = 2, filtered : bool = False, parallel 
     # build integer-keyed coefficient dict for O(1) lookup without string formatting
     state_dict=state.to_dictionary
     coeff_dict={int(key,2): val for key, val in state_dict.items()}
+    #coeff_vec=np.zeros(d,dtype=complex)
+    #for k,v in coeff_dict.items():
+    #    coeff_vec[k]=v
     conj_dict={k: np.conj(v) for k, v in coeff_dict.items()}
+    #conj_vec=np.conj(coeff_vec)
     c_states=list(coeff_dict.keys())
     c_states_set=set(c_states)
     t2=time.perf_counter()
 #    print(f'Setup time: {round(t2-t1,6)}s')
     # generate all the X symplectic vectors that could give non-zero contributions
     # sorted() ensures deterministic ordering across MPI ranks
-    X_symps=sorted({s1^s2 for s1 in c_states for s2 in c_states})
+    X_symps=np.array(sorted({s1^s2 for s1 in c_states for s2 in c_states}))
     t3=time.perf_counter()
  #   print(f'X symps generation time: {round(t3-t2,6)}s')
 
