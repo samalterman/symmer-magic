@@ -48,5 +48,8 @@ setup(
             "matplotlib>=3.5.0",
             "ipykernel>=6.0",
         ],
+        "mpi": [
+            "mpi4py>=3.1.0",
+        ],
     }
 )

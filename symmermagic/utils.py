@@ -7,17 +7,24 @@ from joblib import Parallel, delayed, parallel_config
 import warnings
 import time
 
-def stab_renyi_entropy(state: QuantumState, order: int=2, filtered : bool = False, approach : str = 'exact', parallel : bool = False, n_proc : int = 4, n_samples : int= 1e6,gpu : bool = False, gpu_device : int = None):
+def stab_renyi_entropy(state: QuantumState, order: int=2, filtered : bool = False, approach : str = 'exact', parallel = False, n_proc : int = 4, n_samples : int= 1e6,gpu : bool = False, gpu_device : int = None):
     """Calculates the stabilizer Renyi entropy of the state. See arXiv:2106.12567 for details.
-    
+
     Args:
         state (QuantumState): the state to calculate the SRE of.
         order (int, optional): the order of SRE to calculate. Default is 2.
-        filtered (bool, optional): whether to calculate the filtered stabilizer Renyi entropy by excluding the identity. See arXiv:2312.11631. Default is False. 
-        approach (str, optional): which calculation approach to use. Valid options are {'exact', 'metropolis','perfectpaulis'}. Default is 'Exact'.
-        n_samples (int, optional): the number of samples to use (only applies to 'metropolis' and 'perfectpaulis'). Default is 1e6.
-        parallel (bool, optional): whether to use parallelization approaches (only applies to 'exact' and 'perfectpaulis'). Default is False.
-        n_proc (int, optional): if using parallelization, the number of processes to use. Default is 4.
+        filtered (bool, optional): whether to calculate the filtered stabilizer Renyi entropy by excluding the identity. See arXiv:2312.11631. Default is False.
+        approach (str, optional): which calculation approach to use. Valid options are {'exact', 'metropolis'}. Default is 'exact'.
+        n_samples (int, optional): the number of samples to use (only applies to 'metropolis'). Default is 1e6.
+        parallel (bool or str, optional): parallelization mode. False for serial, True or 'joblib' for
+            joblib multiprocessing, 'mpi' for MPI distributed computing (requires mpi4py, launch with
+            mpirun/srun). Only applies to 'exact' approach. Default is False.
+        n_proc (int, optional): number of processes for joblib parallelization. Ignored for MPI
+            (number of ranks is set at launch). Default is 4.
+        gpu (bool, optional): whether to use GPU acceleration via CuPy. Can be combined with
+            parallel='mpi' for multi-node multi-GPU runs. Default is False.
+        gpu_device (int, optional): which GPU device to use. For MPI+GPU, auto-assigned from local
+            rank if None. Default is None.
 
     Returns:
         Mq: the calculated stabilizer Renyi entropy
@@ -76,20 +83,37 @@ def _build_a_vectors(X_symps_batch, c_states, c_states_set, coeff_dict, conj_dic
                 A[j, s1] = coeff_dict[s1] * conj_dict[s2]
     return A
 
-def stab_entropy_symp(state, order : int = 2, filtered : bool = False, parallel : bool = False, n_proc : int = 4, gpu : bool = False, gpu_device : int = None) -> float:
+def stab_entropy_symp(state, order : int = 2, filtered : bool = False, parallel = False, n_proc : int = 4, gpu : bool = False, gpu_device : int = None) -> float:
     """Calculates the exact stabilizer Renyi entropy of the given state by being cheeky in the symplectic representation.
     Args:
         state (QuantumState): the state to calculate the stabilizer entropy for
         order (int): the order of the stabilizer entropy to calculate. default is 2
         filtered (bool): whether to calculate the filtered stabilizer entropy instead of the unfilitered stabilizer entropy. See arXiv:2312.11631 for details. default is False.
-        parallel (bool, optional): whether to use CPU parallelization via joblib. Default is False.
-        n_proc (int, optional): if using parallelization, the number of processes to use. Default is 4.
+        parallel (bool or str, optional): False for serial, True or 'joblib' for joblib multiprocessing,
+            'mpi' for MPI distributed computing. Default is False.
+        n_proc (int, optional): number of joblib processes. Ignored for MPI. Default is 4.
         gpu (bool, optional): whether to use GPU acceleration via CuPy. Runs batched FWHT on GPU.
-            Requires CuPy to be installed and a CUDA-capable GPU available. Default is False.
+            Requires CuPy to be installed and a CUDA-capable GPU available.
+            Can be combined with parallel='mpi' for multi-node multi-GPU. Default is False.
         gpu_device (int, optional): which GPU device to use. If None, uses the device set by
-            CUDA_VISIBLE_DEVICES or defaults to device 0. Default is None.
+            CUDA_VISIBLE_DEVICES or defaults to device 0. For MPI+GPU, auto-assigned from
+            local rank if None. Default is None.
     Returns:
         Mq (float): the calculated stabilizer entropy """
+
+    # Normalize parallel parameter for backward compatibility
+    if parallel is True:
+        _mode = 'joblib'
+    elif parallel is False or parallel is None:
+        _mode = None
+    else:
+        _mode = str(parallel).lower()
+        if _mode not in ('joblib', 'mpi'):
+            raise ValueError(f"Unrecognised parallel mode '{parallel}'. Use False, True, 'joblib', or 'mpi'.")
+
+    # For MPI+GPU, auto-assign GPU device from local MPI rank
+    if gpu and _mode == 'mpi' and gpu_device is None:
+        gpu_device = _get_mpi_local_rank()
 
     if gpu:
         try:
@@ -118,13 +142,16 @@ def stab_entropy_symp(state, order : int = 2, filtered : bool = False, parallel 
     t2=time.perf_counter()
 #    print(f'Setup time: {round(t2-t1,6)}s')
     # generate all the X symplectic vectors that could give non-zero contributions
-    X_symps=list({s1^s2 for s1 in c_states for s2 in c_states})
+    # sorted() ensures deterministic ordering across MPI ranks
+    X_symps=sorted({s1^s2 for s1 in c_states for s2 in c_states})
     t3=time.perf_counter()
  #   print(f'X symps generation time: {round(t3-t2,6)}s')
 
-    if gpu:
+    if _mode == 'mpi':
+        zeta=_symp_mpi(X_symps, c_states, c_states_set, coeff_dict, conj_dict, d, order, gpu=gpu)
+    elif gpu:
         zeta=_symp_gpu(cp, X_symps, c_states, c_states_set, coeff_dict, conj_dict, d, order)
-    elif parallel:
+    elif _mode == 'joblib':
         def _zeta_for_x(x_symp):
             a=np.zeros(d, dtype=complex)
             for s1 in c_states:
@@ -179,6 +206,67 @@ def _symp_gpu(cp, X_symps, c_states, c_states_set, coeff_dict, conj_dict, d, ord
 
     return zeta
 
+def _get_mpi_local_rank():
+    """Detect MPI local rank from environment variables set by common MPI launchers.
+    Used to auto-assign GPU devices in multi-node MPI+GPU runs."""
+    import os
+    for var in ('OMPI_COMM_WORLD_LOCAL_RANK',   # OpenMPI
+                'MV2_COMM_WORLD_LOCAL_RANK',    # MVAPICH2
+                'MPI_LOCALRANKID',              # Intel MPI
+                'SLURM_LOCALID',                # SLURM
+                'LOCAL_RANK'):                   # PyTorch-style / generic
+        val = os.environ.get(var)
+        if val is not None:
+            return int(val)
+    # Fallback: use global rank (correct when running on a single node)
+    from mpi4py import MPI
+    return MPI.COMM_WORLD.Get_rank()
+
+def _symp_mpi(X_symps, c_states, c_states_set, coeff_dict, conj_dict, d, order, gpu=False):
+    """MPI-distributed zeta computation. Distributes X_symps across MPI ranks,
+    computes partial zeta on each rank (CPU or GPU), and reduces via MPI.SUM.
+
+    All ranks must call this function with the same state data.
+    Returns the total zeta on all ranks (broadcast from root)."""
+    from mpi4py import MPI
+    comm = MPI.COMM_WORLD
+    rank = comm.Get_rank()
+    size = comm.Get_size()
+
+    # Distribute X_symps evenly across ranks
+    n = len(X_symps)
+    chunk = n // size
+    remainder = n % size
+    if rank < remainder:
+        start = rank * (chunk + 1)
+        end = start + chunk + 1
+    else:
+        start = remainder * (chunk + 1) + (rank - remainder) * chunk
+        end = start + chunk
+    my_X_symps = X_symps[start:end]
+
+    # Compute local zeta contribution
+    if len(my_X_symps) == 0:
+        local_zeta = 0.0
+    elif gpu:
+        import cupy as cp
+        local_zeta = _symp_gpu(cp, my_X_symps, c_states, c_states_set, coeff_dict, conj_dict, d, order)
+    else:
+        def _zeta_for_x(x_symp):
+            a = np.zeros(d, dtype=complex)
+            for s1 in c_states:
+                s2 = s1 ^ x_symp
+                if s2 in c_states_set:
+                    a[s1] = coeff_dict[s1] * conj_dict[s2]
+            f = _fwht(a)
+            return np.sum(np.abs(f)**(2*order)) / d
+        local_zeta = sum(_zeta_for_x(x) for x in my_X_symps)
+
+    # Sum partial zeta across all ranks
+    total_zeta = comm.reduce(local_zeta, op=MPI.SUM, root=0)
+    # Broadcast so all ranks return the same result
+    zeta = comm.bcast(total_zeta, root=0)
+    return zeta
 
 
 def stab_entropy_exact(state_vec, order : int = 2, filtered : bool = False, parallel : bool = False, n_proc : int = 4) -> float:
