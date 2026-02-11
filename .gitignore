@@ -119,3 +119,4 @@ temp/
 docs/_build/
 docs/_static/
 docs/_templates/
+/magic_env

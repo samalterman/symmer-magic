@@ -5,8 +5,9 @@ from itertools import chain, product
 import random
 from joblib import Parallel, delayed, parallel_config
 import warnings
+import time
 
-def stab_renyi_entropy(state: QuantumState, order: int=2, filtered : bool = False, approach : str = 'exact', parallel : bool = False, n_proc : int = 4, n_samples : int= 1e6):
+def stab_renyi_entropy(state: QuantumState, order: int=2, filtered : bool = False, approach : str = 'exact', parallel : bool = False, n_proc : int = 4, n_samples : int= 1e6,gpu : bool = False, gpu_device : int = None):
     """Calculates the stabilizer Renyi entropy of the state. See arXiv:2106.12567 for details.
     
     Args:
@@ -22,22 +23,163 @@ def stab_renyi_entropy(state: QuantumState, order: int=2, filtered : bool = Fals
         Mq: the calculated stabilizer Renyi entropy
     """
     Mq=0
-    n_qubits=state.n_qubits
-    state_vec=state.to_sparse_matrix
-    approach.lower()
-    if n_qubits > 12 and approach == 'exact':
-        warnings.warn('Warning: Direct computation for n > 12 could take significant time unless you have a very nice computer.')
+    approach=approach.lower()
 
-    match approach:
-        case 'exact' :
-            Mq=stab_entropy_exact(state_vec=state_vec,order=order,filtered=filtered,parallel=parallel,n_proc=n_proc)
-        case 'metropolis' :
-            Mq=stab_entropy_metropolis(state_vec,order=order,filtered=filtered,n_samples=n_samples)
-        case 'perfectpaulis' :
-            print('perfectpaulis is not yet implemented. Try again, eager beaver!')
-        case _:
-            raise ValueError('Unrecognised calculation strategy.')
+    if approach=='exact':
+        Mq=stab_entropy_symp(state=state,order=order,filtered=filtered,parallel=parallel,n_proc=n_proc,gpu=gpu, gpu_device=gpu_device)
+    elif approach=='metropolis':
+        state_vec=state.to_sparse_matrix
+        Mq=stab_entropy_metropolis(state_vec,order=order,filtered=filtered,n_samples=n_samples)
+    else:
+        raise ValueError('Unrecognised calculation strategy.')
+            
     return Mq
+
+def _fwht(a):
+    """Fast Walsh-Hadamard Transform using numpy vectorization.
+    Computes f[z] = sum_k a[k] * (-1)^{popcount(k & z)} in O(d log d)."""
+    result = np.array(a, dtype=complex)
+    h = 1
+    while h < len(result):
+        result = result.reshape(-1, 2 * h)
+        left = result[:, :h].copy()
+        right = result[:, h:].copy()
+        result[:, :h] = left + right
+        result[:, h:] = left - right
+        result = result.ravel()
+        h *= 2
+    return result
+
+def _fwht_batched_gpu(A_gpu):
+    """Batched Fast Walsh-Hadamard Transform on GPU using CuPy.
+    A_gpu has shape (batch, d). Transforms each row independently."""
+    import cupy as cp
+    batch, d = A_gpu.shape
+    h = 1
+    while h < d:
+        A_gpu = A_gpu.reshape(batch, -1, 2 * h)
+        left = A_gpu[:, :, :h].copy()
+        right = A_gpu[:, :, h:].copy()
+        A_gpu[:, :, :h] = left + right
+        A_gpu[:, :, h:] = left - right
+        A_gpu = A_gpu.reshape(batch, -1)
+        h *= 2
+    return A_gpu
+
+def _build_a_vectors(X_symps_batch, c_states, c_states_set, coeff_dict, conj_dict, d):
+    """Build the signal vectors a[s1] = c_{s1} * conj(c_{s1 XOR x}) for a batch of x_symps."""
+    A = np.zeros((len(X_symps_batch), d), dtype=np.complex128)
+    for j, x_symp in enumerate(X_symps_batch):
+        for s1 in c_states:
+            s2 = s1 ^ x_symp
+            if s2 in c_states_set:
+                A[j, s1] = coeff_dict[s1] * conj_dict[s2]
+    return A
+
+def stab_entropy_symp(state, order : int = 2, filtered : bool = False, parallel : bool = False, n_proc : int = 4, gpu : bool = False, gpu_device : int = None) -> float:
+    """Calculates the exact stabilizer Renyi entropy of the given state by being cheeky in the symplectic representation.
+    Args:
+        state (QuantumState): the state to calculate the stabilizer entropy for
+        order (int): the order of the stabilizer entropy to calculate. default is 2
+        filtered (bool): whether to calculate the filtered stabilizer entropy instead of the unfilitered stabilizer entropy. See arXiv:2312.11631 for details. default is False.
+        parallel (bool, optional): whether to use CPU parallelization via joblib. Default is False.
+        n_proc (int, optional): if using parallelization, the number of processes to use. Default is 4.
+        gpu (bool, optional): whether to use GPU acceleration via CuPy. Runs batched FWHT on GPU.
+            Requires CuPy to be installed and a CUDA-capable GPU available. Default is False.
+        gpu_device (int, optional): which GPU device to use. If None, uses the device set by
+            CUDA_VISIBLE_DEVICES or defaults to device 0. Default is None.
+    Returns:
+        Mq (float): the calculated stabilizer entropy """
+
+    if gpu:
+        try:
+            import cupy as cp
+        except ImportError:
+            raise ImportError("GPU mode requires CuPy. Install with: pip install cupy-cuda12x (or the appropriate CUDA version)")
+        try:
+            if gpu_device is not None:
+                cp.cuda.Device(gpu_device).use()
+            dev=cp.cuda.Device()
+            dev.compute_capability
+        except cp.cuda.runtime.CUDARuntimeError:
+            raise RuntimeError(
+                f"No CUDA GPU available (are you on a login node?). "
+                f"Submit to a GPU node or set CUDA_VISIBLE_DEVICES."
+            )
+    t1=time.perf_counter()
+    n_qubits=state.n_qubits
+    d=2**n_qubits
+    # build integer-keyed coefficient dict for O(1) lookup without string formatting
+    state_dict=state.to_dictionary
+    coeff_dict={int(key,2): val for key, val in state_dict.items()}
+    conj_dict={k: np.conj(v) for k, v in coeff_dict.items()}
+    c_states=list(coeff_dict.keys())
+    c_states_set=set(c_states)
+    t2=time.perf_counter()
+#    print(f'Setup time: {round(t2-t1,6)}s')
+    # generate all the X symplectic vectors that could give non-zero contributions
+    X_symps=list({s1^s2 for s1 in c_states for s2 in c_states})
+    t3=time.perf_counter()
+ #   print(f'X symps generation time: {round(t3-t2,6)}s')
+
+    if gpu:
+        zeta=_symp_gpu(cp, X_symps, c_states, c_states_set, coeff_dict, conj_dict, d, order)
+    elif parallel:
+        def _zeta_for_x(x_symp):
+            a=np.zeros(d, dtype=complex)
+            for s1 in c_states:
+                s2=s1^x_symp
+                if s2 in c_states_set:
+                    a[s1]=coeff_dict[s1]*conj_dict[s2]
+            f=_fwht(a)
+            return np.sum(np.abs(f)**(2*order))/d
+        batches=max(int(len(X_symps) / n_proc), len(X_symps) // (n_proc * 10))
+        with parallel_config(backend='loky'):
+            zeta_vals=Parallel(n_jobs=n_proc,batch_size=batches)(delayed(_zeta_for_x)(x) for x in X_symps)
+        zeta=sum(zeta_vals)
+    else:
+        def _zeta_for_x(x_symp):
+            a=np.zeros(d, dtype=complex)
+            for s1 in c_states:
+                s2=s1^x_symp
+                if s2 in c_states_set:
+                    a[s1]=coeff_dict[s1]*conj_dict[s2]
+            f=_fwht(a)
+            return np.sum(np.abs(f)**(2*order))/d
+        zeta=sum(_zeta_for_x(x) for x in X_symps)
+    t4=time.perf_counter()
+#    print(f'Zeta calculation time: {round(t4-t3,6)}s')
+    if filtered:
+        zeta=(zeta-1/d)*d/(d-1)
+    Mq=-np.log2(zeta)/(order-1)
+    return Mq
+
+def _symp_gpu(cp, X_symps, c_states, c_states_set, coeff_dict, conj_dict, d, order):
+    """GPU-accelerated zeta computation. Batches X_symps to fit in GPU memory."""
+    num_x=len(X_symps)
+    # auto-determine batch size from available GPU memory
+    free_mem=cp.cuda.Device().mem_info[0]
+    bytes_per_row=d * 16  # complex128
+    # use at most 40% of free GPU memory for the working batch (need room for copies in FWHT)
+    batch_size=max(1, int(free_mem * 0.4 / (bytes_per_row * 3)))
+    batch_size=min(batch_size, num_x)
+
+    zeta=0.0
+    for i in range(0, num_x, batch_size):
+        batch_x=X_symps[i:i+batch_size]
+        # build a-vectors on CPU
+        A=_build_a_vectors(batch_x, c_states, c_states_set, coeff_dict, conj_dict, d)
+        # transfer to GPU, run batched FWHT, compute contribution
+        A_gpu=cp.asarray(A)
+        F_gpu=_fwht_batched_gpu(A_gpu)
+        zeta+=float(cp.sum(cp.abs(F_gpu)**(2*order)).get())/d
+        # free GPU memory between batches
+        del A_gpu, F_gpu
+        cp.get_default_memory_pool().free_all_blocks()
+
+    return zeta
+
+
 
 def stab_entropy_exact(state_vec, order : int = 2, filtered : bool = False, parallel : bool = False, n_proc : int = 4) -> float:
     """Calculates the exact stabilizer Renyi entropy of the given state by sampling all possible Pauli strings.
@@ -49,6 +191,7 @@ def stab_entropy_exact(state_vec, order : int = 2, filtered : bool = False, para
         n_proc (int, optional): if using parallelization, the number of processes to use. Default is 4.
     Returns:
         Mq (float): the calculated stabilizer entropy """
+    ###deprecated!
     
     n_qubits=float(np.log2(state_vec.shape[0]))
     assert n_qubits.is_integer(), 'state is wrong shape!'
@@ -155,9 +298,6 @@ def stab_entropy_metropolis(state_vec, order : int = 2, filtered : bool = False,
 
 def stab_linear_entropy(state : QuantumState):
     """Calculates the stabilizer linear entropy of the state. See arXiv:2106.12567 for details.
-    
-    Args:
-    return_xi_vec (bool, optional): whether to also return the vector of probabilities. Default is False.
 
     Returns:
     Mlin: the calculated stabilizer linear entropy
