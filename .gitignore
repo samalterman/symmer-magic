@@ -120,3 +120,6 @@ docs/_build/
 docs/_static/
 docs/_templates/
 /magic_env
+/magic_env
+/magic_env/bin
+*.12
