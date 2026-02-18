@@ -73,14 +73,11 @@ def _fwht_batched_gpu(A_gpu):
         h *= 2
     return A_gpu
 
-def _build_a_vectors(X_symps_batch, c_states, c_states_set, coeff_dict, conj_dict, d):
+def _build_a_vectors(X_symps_batch, c_states, coeff_vec, conj_vec, d):
     """Build the signal vectors a[s1] = c_{s1} * conj(c_{s1 XOR x}) for a batch of x_symps."""
     A = np.zeros((len(X_symps_batch), d), dtype=np.complex128)
     for j, x_symp in enumerate(X_symps_batch):
-        for s1 in c_states:
-            s2 = s1 ^ x_symp
-            if s2 in c_states_set:
-                A[j, s1] = coeff_dict[s1] * conj_dict[s2]
+        A[j, c_states] = coeff_vec[c_states]*conj_vec[np.bitwise_xor(x_symp,c_states)]
     return A
 
 def stab_entropy_symp(state, order : int = 2, filtered : bool = False, parallel = False, n_proc : int = 4, gpu : bool = False, gpu_device : int = None) -> float:
@@ -136,41 +133,27 @@ def stab_entropy_symp(state, order : int = 2, filtered : bool = False, parallel 
     # build integer-keyed coefficient dict for O(1) lookup without string formatting
     state_dict=state.to_dictionary
     coeff_dict={int(key,2): val for key, val in state_dict.items()}
-    conj_dict={k: np.conj(v) for k, v in coeff_dict.items()}
-    c_states=list(coeff_dict.keys())
-    c_states_set=set(c_states)
+    c_states=np.unique(np.asarray(list(coeff_dict.keys()),dtype=np.int64))
+    coeff_vec=state.to_dense_matrix.flatten()
+    conj_vec=np.conj(coeff_vec)    
     t2=time.perf_counter()
 #    print(f'Setup time: {round(t2-t1,6)}s')
     # generate all the X symplectic vectors that could give non-zero contributions
     # sorted() ensures deterministic ordering across MPI ranks
     X_symps=np.array(sorted({s1^s2 for s1 in c_states for s2 in c_states}))
     t3=time.perf_counter()
-    print(f'X symps generation time: {round(t3-t2,6)}s')
+#    print(f'X symps generation time: {round(t3-t2,6)}s')
 
     if _mode == 'mpi':
-        zeta=_symp_mpi(X_symps, c_states, c_states_set, coeff_dict, conj_dict, d, order, gpu=gpu)
+        zeta=_symp_mpi(X_symps, c_states, coeff_vec, conj_vec, d, order, gpu=gpu)
     elif gpu:
-        zeta=_symp_gpu(cp, X_symps, c_states, c_states_set, coeff_dict, conj_dict, d, order)
+        zeta=_symp_gpu(cp, X_symps, c_states, coeff_vec, conj_vec, d, order)
     elif _mode == 'joblib':
-        def _zeta_for_x(x_symp):
-            a=np.zeros(d, dtype=complex)
-            for s1 in c_states:
-                s2=s1^x_symp
-                if s2 in c_states_set:
-                    a[s1]=coeff_dict[s1]*conj_dict[s2]
-            f=_fwht(a)
-            return np.sum(np.abs(f)**(2*order))/d
-        batches=max(int(len(X_symps) / n_proc), len(X_symps) // (n_proc * 10))
-        with parallel_config(backend='loky'):
-            zeta_vals=Parallel(n_jobs=n_proc,batch_size=batches)(delayed(_zeta_for_x)(x) for x in X_symps)
-        zeta=sum(zeta_vals)
+        zeta=_symp_joblib(X_symps,c_states,coeff_vec,conj_vec,d,order,n_proc)
     else:
         def _zeta_for_x(x_symp):
             a=np.zeros(d, dtype=complex)
-            for s1 in c_states:
-                s2=s1^x_symp
-                if s2 in c_states_set:
-                    a[s1]=coeff_dict[s1]*conj_dict[s2]
+            a[c_states]=coeff_vec[c_states]*conj_vec[np.bitwise_xor(x_symp,c_states)]
             f=_fwht(a)
             return np.sum(np.abs(f)**(2*order))/d
         zeta=sum(_zeta_for_x(x) for x in X_symps)
@@ -181,7 +164,7 @@ def stab_entropy_symp(state, order : int = 2, filtered : bool = False, parallel 
     Mq=-np.log2(zeta)/(order-1)
     return Mq
 
-def _symp_gpu(cp, X_symps, c_states, c_states_set, coeff_dict, conj_dict, d, order):
+def _symp_gpu(cp, X_symps, c_states, coeff_vec, conj_vec, d, order):
     """GPU-accelerated zeta computation. Batches X_symps to fit in GPU memory."""
     num_x=len(X_symps)
     # auto-determine batch size from available GPU memory
@@ -195,7 +178,7 @@ def _symp_gpu(cp, X_symps, c_states, c_states_set, coeff_dict, conj_dict, d, ord
     for i in range(0, num_x, batch_size):
         batch_x=X_symps[i:i+batch_size]
         # build a-vectors on CPU
-        A=_build_a_vectors(batch_x, c_states, c_states_set, coeff_dict, conj_dict, d)
+        A=_build_a_vectors(batch_x, c_states, coeff_vec, conj_vec, d)
         # transfer to GPU, run batched FWHT, compute contribution
         A_gpu=cp.asarray(A)
         F_gpu=_fwht_batched_gpu(A_gpu)
@@ -222,7 +205,7 @@ def _get_mpi_local_rank():
     from mpi4py import MPI
     return MPI.COMM_WORLD.Get_rank()
 
-def _symp_mpi(X_symps, c_states, c_states_set, coeff_dict, conj_dict, d, order, gpu=False):
+def _symp_mpi(X_symps, c_states, coeff_vec,conj_vec, d, order, gpu=False):
     """MPI-distributed zeta computation. Distributes X_symps across MPI ranks,
     computes partial zeta on each rank (CPU or GPU), and reduces via MPI.SUM.
 
@@ -250,14 +233,11 @@ def _symp_mpi(X_symps, c_states, c_states_set, coeff_dict, conj_dict, d, order, 
         local_zeta = 0.0
     elif gpu:
         import cupy as cp
-        local_zeta = _symp_gpu(cp, my_X_symps, c_states, c_states_set, coeff_dict, conj_dict, d, order)
+        local_zeta = _symp_gpu(cp, my_X_symps, c_states, coeff_vec, conj_vec, d, order)
     else:
         def _zeta_for_x(x_symp):
             a = np.zeros(d, dtype=complex)
-            for s1 in c_states:
-                s2 = s1 ^ x_symp
-                if s2 in c_states_set:
-                    a[s1] = coeff_dict[s1] * conj_dict[s2]
+            a[c_states]=coeff_vec[c_states]*conj_vec[np.bitwise_xor(x_symp,c_states)]
             f = _fwht(a)
             return np.sum(np.abs(f)**(2*order)) / d
         local_zeta = sum(_zeta_for_x(x) for x in my_X_symps)
@@ -268,6 +248,18 @@ def _symp_mpi(X_symps, c_states, c_states_set, coeff_dict, conj_dict, d, order, 
     zeta = comm.bcast(total_zeta, root=0)
     return zeta
 
+def _symp_joblib(X_symps, c_states, coeff_vec,conj_vec, d, order,n_proc):
+    """Parallel zeta computation designed for use on laptops using joblib"""
+    def _zeta_for_x(x_symp):
+        a=np.zeros(d, dtype=complex)
+        a[c_states]=conj_vec[c_states]*coeff_vec[np.bitwise_xor(x_symp,c_states)]
+        f=_fwht(a)
+        return np.sum(np.abs(f)**(2*order))/d
+    batches=max(int(len(X_symps) / n_proc), len(X_symps) // (n_proc * 10))
+    with parallel_config(backend='loky'):
+        zeta_vals=Parallel(n_jobs=n_proc,batch_size=batches)(delayed(_zeta_for_x)(x) for x in X_symps)
+    zeta=sum(zeta_vals)
+    return zeta
 
 def stab_entropy_exact(state_vec, order : int = 2, filtered : bool = False, parallel : bool = False, n_proc : int = 4) -> float:
     """Calculates the exact stabilizer Renyi entropy of the given state by sampling all possible Pauli strings.
